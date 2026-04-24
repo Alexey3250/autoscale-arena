@@ -1,5 +1,5 @@
 import { readFileSync, existsSync } from "node:fs";
-import { KubeConfig, Watch } from "@kubernetes/client-node";
+import { CoreV1Api, KubeConfig, Watch } from "@kubernetes/client-node";
 import type { PodInfo } from "./types";
 
 const SA_DIR = "/var/run/secrets/kubernetes.io/serviceaccount";
@@ -117,38 +117,23 @@ export function toPodInfo(raw: RawPod): PodInfo | null {
 }
 
 /**
- * Fetch a one-shot list of pods matching the worker label. Uses the raw REST
- * endpoint so we can reuse the same auth the Watch does without touching the
- * heavyweight generated API surface.
+ * Fetch a one-shot list of pods matching the worker label.
+ *
+ * We go through `CoreV1Api` rather than raw `fetch` because the kube-apiserver
+ * on OpenShift is fronted by a cluster-internal CA. The @kubernetes/client-node
+ * library loads that CA during `loadFromCluster()` and applies it on each
+ * request; raw `fetch` would otherwise fail with `SELF_SIGNED_CERT_IN_CHAIN`.
+ * (`NODE_EXTRA_CA_CERTS` only works if set before Node starts, so runtime
+ * assignment does nothing — don't try that.)
  */
 export async function listPods(ctx: ClusterContext): Promise<PodInfo[]> {
-  const cluster = ctx.kubeConfig.getCurrentCluster();
-  if (!cluster) throw new Error("no current cluster in kubeconfig");
-  const url = new URL(
-    `/api/v1/namespaces/${ctx.namespace}/pods`,
-    cluster.server,
-  );
-  url.searchParams.set("labelSelector", ctx.labelSelector);
-
-  const token = readFileSync(SA_TOKEN_FILE, "utf8").trim();
-  const caPath = `${SA_DIR}/ca.crt`;
-
-  // Node 20+ fetch honours NODE_EXTRA_CA_CERTS; OpenShift mounts the CA into
-  // the SA dir but not into the process trust store. We still point at it for
-  // clarity in case the cluster ships a non-default CA.
-  if (existsSync(caPath) && !process.env.NODE_EXTRA_CA_CERTS) {
-    process.env.NODE_EXTRA_CA_CERTS = caPath;
-  }
-
-  const res = await fetch(url, {
-    headers: { Authorization: `Bearer ${token}` },
+  const api = ctx.kubeConfig.makeApiClient(CoreV1Api);
+  const res = await api.listNamespacedPod({
+    namespace: ctx.namespace,
+    labelSelector: ctx.labelSelector,
   });
-  if (!res.ok) {
-    throw new Error(`list pods failed: ${res.status} ${res.statusText}`);
-  }
-  const body = (await res.json()) as { items?: RawPod[] };
-  return (body.items ?? [])
-    .map(toPodInfo)
+  return (res.items ?? [])
+    .map((item) => toPodInfo(item as RawPod))
     .filter((p): p is PodInfo => p !== null);
 }
 
