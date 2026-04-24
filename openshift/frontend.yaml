@@ -1,0 +1,99 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: autoscale-arena-frontend
+  labels:
+    app: autoscale-arena-frontend
+    app.kubernetes.io/part-of: autoscale-arena
+    app.kubernetes.io/component: frontend
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: autoscale-arena-frontend
+  template:
+    metadata:
+      labels:
+        app: autoscale-arena-frontend
+        app.kubernetes.io/part-of: autoscale-arena
+        app.kubernetes.io/component: frontend
+    spec:
+      serviceAccountName: autoscale-arena-frontend
+      containers:
+        - name: frontend
+          image: autoscale-arena-frontend:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 3000
+          env:
+            - name: WORKER_MODE
+              value: "false"
+            - name: WORKER_SERVICE_URL
+              value: "http://autoscale-arena-worker:3000"
+            - name: NODE_ENV
+              value: "production"
+          resources:
+            requests:
+              cpu: 100m
+              memory: 192Mi
+            limits:
+              cpu: 500m
+              memory: 384Mi
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 2
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /api/health
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: autoscale-arena-frontend
+  labels:
+    app: autoscale-arena-frontend
+    app.kubernetes.io/part-of: autoscale-arena
+    app.kubernetes.io/component: frontend
+spec:
+  type: ClusterIP
+  selector:
+    app: autoscale-arena-frontend
+  ports:
+    - name: http
+      port: 3000
+      targetPort: http
+      protocol: TCP
+---
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: autoscale-arena-frontend
+  labels:
+    app: autoscale-arena-frontend
+    app.kubernetes.io/part-of: autoscale-arena
+  annotations:
+    # HAProxy defaults to a 30s server timeout; SSE heartbeats every 15s keep
+    # it alive, but the explicit override prevents router tweaks from biting.
+    haproxy.router.openshift.io/timeout: 4h
+spec:
+  to:
+    kind: Service
+    name: autoscale-arena-frontend
+    weight: 100
+  port:
+    targetPort: http
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect
+  wildcardPolicy: None
