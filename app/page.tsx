@@ -403,7 +403,100 @@ export default function Home() {
       </section>
 
       <Footer source={source} />
+
+      <HowThisWorks />
     </main>
+  );
+}
+
+function HowThisWorks() {
+  return (
+    <details className="how-it-works mt-2 w-full border-t border-white/10">
+      <summary className="flex w-full items-center justify-between px-1 py-3 text-xs text-white/55 transition-colors hover:text-white/80">
+        <span className="font-medium uppercase tracking-[0.18em]">How this works</span>
+        <svg
+          className="chevron h-3 w-3"
+          viewBox="0 0 12 8"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="1.5"
+          aria-hidden
+        >
+          <path d="M1 1.5 L6 6.5 L11 1.5" strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
+      </summary>
+      <div
+        className="how-it-works-body mx-auto max-w-[640px] px-4 py-8 text-[13px] leading-[1.7] text-white/70"
+      >
+        <p className="mb-2 font-semibold text-white/85">The feedback loop</p>
+        <p className="mb-6">
+          Each tap dispatches a CPU-bound POST to a worker pod via the OpenShift
+          Service. The hash loop yields to the event loop in 1000-iteration
+          chunks so liveness probes stay responsive at saturation. metrics-server
+          scrapes pod CPU every 15 seconds; the HPA reconciles desired replicas
+          against the 50% target on the same cadence. Scale-up is rate-limited
+          to +2 pods per 15s, scale-down has 60s stabilization plus 1 pod / 30s
+          — asymmetric policies that prevent thrashing.
+        </p>
+        <p className="mb-2 font-semibold text-white/85">OpenShift-specific bits used here</p>
+        <ul className="mb-6 space-y-1.5 pl-0">
+          <HowItem term="Routes">
+            declarative HTTPS with edge TLS, no Ingress controller required
+          </HowItem>
+          <HowItem term="Source-to-Image">
+            git URL to running pod, no Dockerfile
+          </HowItem>
+          <HowItem term="ImageStreams">
+            internal registry with auto-rollout triggers on image push
+          </HowItem>
+          <HowItem term="Security Context Constraints">
+            rootless containers enforced by <code className="font-mono text-white/80">restricted-v2</code>
+          </HowItem>
+          <HowItem term="Built-in HPA + metrics-server">
+            no separate Prometheus install
+          </HowItem>
+          <HowItem term="Developer Console">
+            Topology view and integrated build logs
+          </HowItem>
+        </ul>
+        <p className="mb-2 font-semibold text-white/85">Built by Alexey Efimik</p>
+        <p className="flex flex-wrap gap-x-3 gap-y-1 text-white/65">
+          <ContactLink href="https://github.com/Alexey3250/autoscale-arena">
+            Source on GitHub
+          </ContactLink>
+          <span aria-hidden className="text-white/25">·</span>
+          <ContactLink href="https://www.linkedin.com/in/efimik/">LinkedIn</ContactLink>
+          <span aria-hidden className="text-white/25">·</span>
+          <ContactLink href="mailto:a.efimik@gmail.com">Email</ContactLink>
+          <span aria-hidden className="text-white/25">·</span>
+          <ContactLink href="https://wa.me/971527846185">WhatsApp</ContactLink>
+        </p>
+      </div>
+    </details>
+  );
+}
+
+function HowItem({ term, children }: { term: string; children: React.ReactNode }) {
+  return (
+    <li className="list-none">
+      <strong className="font-semibold" style={{ color: RH_RED }}>
+        {term}
+      </strong>
+      <span className="text-white/65"> — {children}</span>
+    </li>
+  );
+}
+
+function ContactLink({ href, children }: { href: string; children: React.ReactNode }) {
+  return (
+    <a
+      href={href}
+      className="underline decoration-white/25 underline-offset-2 transition-colors hover:text-white hover:decoration-white/60"
+      target={href.startsWith("http") ? "_blank" : undefined}
+      rel={href.startsWith("http") ? "noreferrer noopener" : undefined}
+    >
+      {children}
+    </a>
   );
 }
 

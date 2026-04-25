@@ -7,3 +7,43 @@
      a few elements; named here so it's findable in one place. */
   --color-rh-red: #ee0000;
 }
+
+/* "How this works" disclosure section. Strips the native marker, animates
+   content fade-in on open, and respects prefers-reduced-motion. The
+   <details> height itself doesn't smoothly grow (cross-browser parity for
+   that still requires ::details-content which is too new), but the inner
+   content fades + slides so the transition reads as polished. */
+.how-it-works > summary {
+  list-style: none;
+  cursor: pointer;
+}
+.how-it-works > summary::-webkit-details-marker {
+  display: none;
+}
+.how-it-works .chevron {
+  transition: transform 200ms ease-out;
+}
+.how-it-works[open] .chevron {
+  transform: rotate(180deg);
+}
+.how-it-works[open] > .how-it-works-body {
+  animation: how-it-works-reveal 200ms ease-out;
+}
+@keyframes how-it-works-reveal {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .how-it-works .chevron {
+    transition: none;
+  }
+  .how-it-works[open] > .how-it-works-body {
+    animation: none;
+  }
+}
