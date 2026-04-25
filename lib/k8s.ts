@@ -1,12 +1,13 @@
 import { readFileSync, existsSync } from "node:fs";
-import { CoreV1Api, KubeConfig, Watch } from "@kubernetes/client-node";
-import type { PodInfo } from "./types";
+import { AutoscalingV2Api, CoreV1Api, KubeConfig, Watch } from "@kubernetes/client-node";
+import type { HpaStatus, PodInfo } from "./types";
 
 const SA_DIR = "/var/run/secrets/kubernetes.io/serviceaccount";
 const SA_NAMESPACE_FILE = `${SA_DIR}/namespace`;
 const SA_TOKEN_FILE = `${SA_DIR}/token`;
 
 const WORKER_LABEL = process.env.WORKER_LABEL_SELECTOR ?? "app=autoscale-arena-worker";
+const HPA_NAME = process.env.WORKER_HPA_NAME ?? "autoscale-arena-worker";
 
 export interface PodWatchEvent {
   type: "ADDED" | "MODIFIED" | "DELETED" | "SYNC";
@@ -135,6 +136,117 @@ export async function listPods(ctx: ClusterContext): Promise<PodInfo[]> {
   return (res.items ?? [])
     .map((item) => toPodInfo(item as RawPod))
     .filter((p): p is PodInfo => p !== null);
+}
+
+interface RawHpa {
+  spec?: {
+    minReplicas?: number;
+    maxReplicas?: number;
+    metrics?: Array<{
+      type?: string;
+      resource?: {
+        name?: string;
+        target?: {
+          type?: string;
+          averageUtilization?: number;
+        };
+      };
+    }>;
+  };
+  status?: {
+    currentReplicas?: number;
+    desiredReplicas?: number;
+    lastScaleTime?: string | Date;
+    currentMetrics?: Array<{
+      type?: string;
+      resource?: {
+        name?: string;
+        current?: { averageUtilization?: number };
+      };
+    }>;
+  };
+}
+
+/**
+ * Read the HPA driving the worker Deployment. Returns a normalised snapshot
+ * the UI can render directly. If RBAC isn't granted (sandbox quirk) or the
+ * HPA doesn't exist yet, returns an HpaStatus with `error` set so the caller
+ * can render a friendly fallback rather than a crash.
+ */
+export async function readHpa(ctx: ClusterContext): Promise<HpaStatus> {
+  const api = ctx.kubeConfig.makeApiClient(AutoscalingV2Api);
+  try {
+    const hpa = (await api.readNamespacedHorizontalPodAutoscaler({
+      name: HPA_NAME,
+      namespace: ctx.namespace,
+    })) as RawHpa;
+    return toHpaStatus(hpa);
+  } catch (err) {
+    return {
+      currentCpuPercent: null,
+      targetCpuPercent: null,
+      desiredReplicas: null,
+      currentReplicas: null,
+      minReplicas: null,
+      maxReplicas: null,
+      lastScaleTime: null,
+      error: errorMessage(err),
+    };
+  }
+}
+
+function toHpaStatus(hpa: RawHpa): HpaStatus {
+  const cpuTarget = hpa.spec?.metrics?.find(
+    (m) => m.type === "Resource" && m.resource?.name === "cpu",
+  );
+  const cpuCurrent = hpa.status?.currentMetrics?.find(
+    (m) => m.type === "Resource" && m.resource?.name === "cpu",
+  );
+  const lastScaleTime = hpa.status?.lastScaleTime;
+  return {
+    currentCpuPercent:
+      typeof cpuCurrent?.resource?.current?.averageUtilization === "number"
+        ? cpuCurrent.resource.current.averageUtilization
+        : null,
+    targetCpuPercent:
+      typeof cpuTarget?.resource?.target?.averageUtilization === "number"
+        ? cpuTarget.resource.target.averageUtilization
+        : null,
+    desiredReplicas: hpa.status?.desiredReplicas ?? null,
+    currentReplicas: hpa.status?.currentReplicas ?? null,
+    minReplicas: hpa.spec?.minReplicas ?? null,
+    maxReplicas: hpa.spec?.maxReplicas ?? null,
+    lastScaleTime:
+      lastScaleTime instanceof Date
+        ? lastScaleTime.toISOString()
+        : typeof lastScaleTime === "string"
+          ? lastScaleTime
+          : null,
+    error: null,
+  };
+}
+
+function errorMessage(err: unknown): string {
+  if (err instanceof Error) return err.message;
+  if (typeof err === "string") return err;
+  try {
+    return JSON.stringify(err);
+  } catch {
+    return "unknown error";
+  }
+}
+
+export function mockHpaStatus(podCount: number): HpaStatus {
+  return {
+    currentCpuPercent: null,
+    targetCpuPercent: 50,
+    desiredReplicas: podCount,
+    currentReplicas: podCount,
+    minReplicas: 1,
+    maxReplicas: 10,
+    lastScaleTime: null,
+    error: "mock",
+  };
 }
 
 /**

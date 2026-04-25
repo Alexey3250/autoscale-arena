@@ -1,11 +1,13 @@
 import {
   listPods,
+  mockHpaStatus,
   mockPods,
+  readHpa,
   resolvePodSource,
   watchPods,
   type ClusterContext,
 } from "@/lib/k8s";
-import type { PodInfo } from "@/lib/types";
+import type { HpaStatus, PodInfo } from "@/lib/types";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -13,6 +15,9 @@ export const dynamic = "force-dynamic";
 const encoder = new TextEncoder();
 const HEARTBEAT_MS = 15_000;
 const MOCK_EMIT_MS = 5_000;
+// HPA controller resyncs every ~15s, but the metrics-server values it reads
+// update faster than that, so a tighter poll keeps the gauge feeling live.
+const HPA_POLL_MS = 3_000;
 
 interface ClientController {
   send: (event: string | null, data: unknown) => void;
@@ -93,21 +98,48 @@ async function runClusterStream(
   signal: AbortSignal,
 ): Promise<void> {
   const pods = new Map<string, PodInfo>();
+  let hpaStatus: HpaStatus | null = null;
+
   const emit = () => {
     const list = Array.from(pods.values()).sort(comparePods);
-    client.send(null, { pods: list, count: list.length, source: "cluster" });
+    client.send(null, {
+      pods: list,
+      count: list.length,
+      source: "cluster",
+      hpaStatus,
+    });
   };
 
   try {
     const initial = await listPods(ctx);
     for (const pod of initial) pods.set(pod.name, pod);
-    emit();
   } catch (err) {
     console.error("[pods/stream] initial list failed", err);
     client.send("error", { message: "initial pod list failed" });
   }
 
+  // Kick off the first HPA read inline so the first SSE message already
+  // carries CPU/replica numbers; otherwise the gauge would render blank for
+  // up to HPA_POLL_MS on connect.
+  hpaStatus = await readHpa(ctx).catch(() => null);
+  emit();
+
   const heartbeat = setInterval(() => client.comment("heartbeat"), HEARTBEAT_MS);
+  const hpaPoll = setInterval(async () => {
+    try {
+      const next = await readHpa(ctx);
+      // Skip emit if nothing meaningful changed; reduces SSE chatter when the
+      // HPA is steady-state.
+      if (!hpaEqual(next, hpaStatus)) {
+        hpaStatus = next;
+        emit();
+      } else {
+        hpaStatus = next;
+      }
+    } catch (err) {
+      console.error("[pods/stream] hpa poll failed", err);
+    }
+  }, HPA_POLL_MS);
 
   const watchAbort = await watchPods(
     ctx,
@@ -125,21 +157,43 @@ async function runClusterStream(
       console.error("[pods/stream] watch ended", err);
       client.send("error", { message: "watch ended" });
       clearInterval(heartbeat);
+      clearInterval(hpaPoll);
       client.close();
     },
   );
 
   signal.addEventListener("abort", () => {
     clearInterval(heartbeat);
+    clearInterval(hpaPoll);
     watchAbort.abort();
     client.close();
   });
 }
 
+function hpaEqual(a: HpaStatus | null, b: HpaStatus | null): boolean {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  return (
+    a.currentCpuPercent === b.currentCpuPercent &&
+    a.targetCpuPercent === b.targetCpuPercent &&
+    a.desiredReplicas === b.desiredReplicas &&
+    a.currentReplicas === b.currentReplicas &&
+    a.minReplicas === b.minReplicas &&
+    a.maxReplicas === b.maxReplicas &&
+    a.lastScaleTime === b.lastScaleTime &&
+    a.error === b.error
+  );
+}
+
 function runMockStream(client: ClientController, signal: AbortSignal): void {
   const emit = () => {
     const pods = mockPods();
-    client.send(null, { pods, count: pods.length, source: "mock" });
+    client.send(null, {
+      pods,
+      count: pods.length,
+      source: "mock",
+      hpaStatus: mockHpaStatus(pods.length),
+    });
   };
   emit();
   const heartbeat = setInterval(() => client.comment("heartbeat"), HEARTBEAT_MS);

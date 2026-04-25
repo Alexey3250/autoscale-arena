@@ -15,6 +15,11 @@ rules:
   - apiGroups: [""]
     resources: ["pods"]
     verbs: ["get", "list", "watch"]
+  # Read the HPA so the UI can show the same CPU/replica counts the
+  # autoscaler is reacting to. autoscaling/v2 is the GA group on OpenShift 4.x.
+  - apiGroups: ["autoscaling"]
+    resources: ["horizontalpodautoscalers"]
+    verbs: ["get", "list", "watch"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
