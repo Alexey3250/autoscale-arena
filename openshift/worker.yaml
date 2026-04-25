@@ -6,6 +6,13 @@ metadata:
     app: autoscale-arena-worker
     app.kubernetes.io/part-of: autoscale-arena
     app.kubernetes.io/component: worker
+  annotations:
+    # OpenShift ImageChange trigger: rolls the worker pods automatically
+    # whenever the shared autoscale-arena-frontend ImageStreamTag advances
+    # (i.e. after every BuildConfig run). Without this the Deployment would
+    # stay pinned to the SHA that was current when first applied.
+    image.openshift.io/triggers: |
+      [{"from":{"kind":"ImageStreamTag","name":"autoscale-arena-frontend:latest"},"fieldPath":"spec.template.spec.containers[?(@.name==\"worker\")].image"}]
 spec:
   # HPA owns this count at runtime; start at 1 so the stack boots cheaply.
   replicas: 1
