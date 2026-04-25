@@ -1,5 +1,6 @@
 "use client";
 
+import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
 import { useEffect, useState } from "react";
 import type { PodInfo } from "@/lib/types";
 
@@ -20,19 +21,29 @@ const STATUS_COLOR: Record<string, string> = {
 
 export function PodGrid({ pods }: PodGridProps) {
   return (
-    <ul
+    <motion.ul
+      layout
       className="grid w-full grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4"
       aria-label="Worker pods"
     >
-      {pods.map((pod) => (
-        <PodCard key={pod.name} pod={pod} />
-      ))}
-      {pods.length === 0 && (
-        <li className="col-span-full rounded-xl border border-white/10 bg-white/5 p-4 text-center text-sm text-white/60">
-          No pods yet — hang tight, one should boot within a few seconds.
-        </li>
-      )}
-    </ul>
+      <AnimatePresence initial={false} mode="popLayout">
+        {pods.map((pod) => (
+          <PodCard key={pod.name} pod={pod} />
+        ))}
+        {pods.length === 0 && (
+          <motion.li
+            key="empty"
+            layout
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="col-span-full rounded-xl border border-white/10 bg-white/5 p-4 text-center text-sm text-white/60"
+          >
+            No pods yet — hold the button to make the HPA spawn one.
+          </motion.li>
+        )}
+      </AnimatePresence>
+    </motion.ul>
   );
 }
 
@@ -41,11 +52,22 @@ function PodCard({ pod }: { pod: PodInfo }) {
   const shortName = pod.name.slice(-6);
   const statusKey = pod.ready ? "Ready" : pod.status;
   const color = STATUS_COLOR[statusKey] ?? STATUS_COLOR.Unknown;
+  const reduceMotion = useReducedMotion();
 
   return (
-    <li
-      className="group relative overflow-hidden rounded-xl border border-white/10 bg-white/5 p-3 text-left shadow-lg backdrop-blur-sm transition duration-300 motion-reduce:transition-none"
-      style={{ animation: "pod-in 320ms ease-out both" }}
+    <motion.li
+      layout
+      initial={
+        reduceMotion ? { opacity: 1 } : { scale: 0, opacity: 0, y: -16 }
+      }
+      animate={{ scale: 1, opacity: 1, y: 0 }}
+      exit={
+        reduceMotion
+          ? { opacity: 0 }
+          : { scale: 0, opacity: 0, transition: { duration: 0.3 } }
+      }
+      transition={{ type: "spring", stiffness: 220, damping: 24 }}
+      className="group relative overflow-hidden rounded-xl border border-white/10 bg-white/5 p-3 text-left shadow-lg backdrop-blur-sm"
       title={pod.name}
     >
       <div className="flex items-center gap-2">
@@ -55,9 +77,7 @@ function PodCard({ pod }: { pod: PodInfo }) {
             pod.ready ? "animate-pulse motion-reduce:animate-none" : ""
           }`}
         />
-        <span className="font-mono text-sm tracking-wide text-white">
-          …{shortName}
-        </span>
+        <span className="font-mono text-sm tracking-wide text-white">…{shortName}</span>
       </div>
       <dl className="mt-2 grid grid-cols-2 gap-y-0.5 text-[11px] text-white/70">
         <dt className="text-white/50">status</dt>
@@ -65,7 +85,10 @@ function PodCard({ pod }: { pod: PodInfo }) {
         <dt className="text-white/50">age</dt>
         <dd className="text-right font-mono text-white/90">{formatAge(ageSec)}</dd>
       </dl>
-    </li>
+      <p className="mt-2 truncate text-[10px] text-white/40">
+        Pod · UBI9 Node.js (S2I) · managed by Deployment
+      </p>
+    </motion.li>
   );
 }
 

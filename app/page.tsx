@@ -2,48 +2,120 @@
 
 import dynamic from "next/dynamic";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { CpuGauge } from "@/components/CpuGauge";
+import { HoldButton } from "@/components/HoldButton";
+import { MetricsBlock } from "@/components/MetricsBlock";
 import { PodGrid } from "@/components/PodGrid";
-import { StatsBar } from "@/components/StatsBar";
-import { TapButton } from "@/components/TapButton";
-import type { PodInfo, PodsSnapshot, WorkResponse, WorkSample } from "@/lib/types";
+import { Tooltip } from "@/components/Tooltip";
+import type { ScaleSample } from "@/components/ScaleHistoryChart";
+import type { HpaStatus, PodInfo, PodsSnapshot, WorkResponse } from "@/lib/types";
 
-const RpsChart = dynamic(
-  () => import("@/components/RpsChart").then((m) => m.RpsChart),
+const ScaleHistoryChart = dynamic(
+  () => import("@/components/ScaleHistoryChart").then((m) => m.ScaleHistoryChart),
   {
     ssr: false,
-    loading: () => <div className="h-32 w-full animate-pulse rounded-xl bg-white/5" />,
+    loading: () => <div className="h-44 w-full animate-pulse rounded-xl bg-white/5" />,
   },
 );
 
 const MAX_RPS_CLIENT = 20;
 const MIN_TAP_INTERVAL_MS = 1_000 / MAX_RPS_CLIENT;
-const SAMPLE_WINDOW_MS = 60_000;
+const SAMPLE_WINDOW_MS = 90_000;
+const SCALE_HISTORY_WINDOW_MS = 180_000;
 const STREAM_BACKOFF_MIN_MS = 500;
 const STREAM_BACKOFF_MAX_MS = 8_000;
+// A pod still counts as "warming up" while its age is below this threshold.
+// Calibrated against the worker readinessProbe (5s initial delay + 5s period).
+const COLD_START_AGE_MS = 12_000;
+// Steady-state samples come only from pods this old or older — keeps the
+// metric clean of cold-start outliers.
+const STEADY_STATE_MIN_AGE_MS = 30_000;
+const RH_RED = "#EE0000";
 
 interface PodsPayload {
   pods: PodInfo[];
   count: number;
   source?: "cluster" | "mock";
+  hpaStatus?: HpaStatus | null;
+}
+
+interface LatencySample {
+  timestamp: number;
+  latencyMs: number;
+}
+
+interface PodFingerprint {
+  startTime: number; // epoch ms
+  firstSeenLatencyMs: number;
 }
 
 export default function Home() {
   const [pods, setPods] = useState<PodInfo[]>([]);
+  const [hpa, setHpa] = useState<HpaStatus | null>(null);
   const [source, setSource] = useState<"cluster" | "mock" | "loading">("loading");
-  const [samples, setSamples] = useState<WorkSample[]>([]);
+  const [coldStartSamples, setColdStartSamples] = useState<LatencySample[]>([]);
+  const [steadySamples, setSteadySamples] = useState<LatencySample[]>([]);
+  const [scaleHistory, setScaleHistory] = useState<ScaleSample[]>([]);
   const [totalTaps, setTotalTaps] = useState(0);
   const [errorCount, setErrorCount] = useState(0);
   const [isHolding, setIsHolding] = useState(false);
+  const [holdMs, setHoldMs] = useState(0);
   const [connectionState, setConnectionState] = useState<"connecting" | "open" | "retrying">(
     "connecting",
   );
 
   const lastTapRef = useRef(0);
   const mountedRef = useRef(true);
+  const podStartCacheRef = useRef<Map<string, number>>(new Map());
+  const podsByNameRef = useRef<Map<string, PodInfo>>(new Map());
+  const seenPodsRef = useRef<Map<string, PodFingerprint>>(new Map());
 
   useEffect(
     () => () => {
       mountedRef.current = false;
+    },
+    [],
+  );
+
+  /**
+   * Mirror the latest pod list to refs so the work-response handler can
+   * synchronously look up a pod's startTime by name without waiting for the
+   * next React render. We also keep a cache of startTimes (epoch ms) so we
+   * can age-test deleted pods that respond after they've been removed from
+   * the visible state.
+   */
+  const applyPods = useCallback((next: PodInfo[]) => {
+    podsByNameRef.current = new Map(next.map((p) => [p.name, p]));
+    for (const pod of next) {
+      if (pod.startTime) {
+        podStartCacheRef.current.set(pod.name, Date.parse(pod.startTime));
+      }
+    }
+    setPods(next);
+  }, []);
+
+  /**
+   * Append a scale-history sample whenever the visible pod count or HPA CPU
+   * meaningfully changes. Driven from the data callbacks (event-shaped),
+   * not from a render effect, so we avoid cascading-render noise.
+   */
+  const recordScaleSample = useCallback(
+    (podsList: PodInfo[], nextHpa: HpaStatus | null) => {
+      const podCount = podsList.filter((p) => p.ready).length;
+      const cpu = nextHpa?.currentCpuPercent ?? null;
+      const nowTs = Date.now();
+      setScaleHistory((prev) => {
+        const last = prev[prev.length - 1];
+        const podsChanged = !last || last.podCount !== podCount;
+        const cpuChanged =
+          last == null ||
+          (cpu !== null &&
+            (last.cpuPercent === null ||
+              Math.abs(cpu - last.cpuPercent) >= 1));
+        const stale = !last || nowTs - last.timestamp > 5_000;
+        if (!podsChanged && !cpuChanged && !stale) return prev;
+        return [...prev, { timestamp: nowTs, podCount, cpuPercent: cpu }];
+      });
     },
     [],
   );
@@ -54,8 +126,10 @@ export default function Home() {
       .then((res) => (res.ok ? (res.json() as Promise<PodsSnapshot>) : null))
       .then((snapshot) => {
         if (cancelled || !snapshot) return;
-        setPods(snapshot.pods);
+        applyPods(snapshot.pods);
+        setHpa(snapshot.hpaStatus);
         setSource(snapshot.source);
+        recordScaleSample(snapshot.pods, snapshot.hpaStatus);
       })
       .catch(() => {
         /* SSE stream will retry. */
@@ -63,7 +137,7 @@ export default function Home() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [applyPods, recordScaleSample]);
 
   useEffect(() => {
     let attempt = 0;
@@ -82,8 +156,12 @@ export default function Home() {
         try {
           const parsed = JSON.parse(evt.data) as PodsPayload;
           if (!parsed || !Array.isArray(parsed.pods)) return;
-          setPods(parsed.pods);
+          applyPods(parsed.pods);
           if (parsed.source) setSource(parsed.source);
+          const nextHpa =
+            parsed.hpaStatus !== undefined ? parsed.hpaStatus : null;
+          if (parsed.hpaStatus !== undefined) setHpa(parsed.hpaStatus);
+          recordScaleSample(parsed.pods, nextHpa);
         } catch {
           /* ignore malformed message */
         }
@@ -107,7 +185,7 @@ export default function Home() {
       if (reconnectTimer) clearTimeout(reconnectTimer);
       es?.close();
     };
-  }, []);
+  }, [applyPods, recordScaleSample]);
 
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
@@ -115,21 +193,50 @@ export default function Home() {
       const nowTs = Date.now();
       setNow(nowTs);
       const cutoff = nowTs - SAMPLE_WINDOW_MS;
-      setSamples((prev) => {
-        const trimmed = prev.filter((s) => s.timestamp >= cutoff);
+      setColdStartSamples((prev) => trimSamples(prev, cutoff));
+      setSteadySamples((prev) => trimSamples(prev, cutoff));
+      setScaleHistory((prev) => {
+        const sCutoff = nowTs - SCALE_HISTORY_WINDOW_MS;
+        const trimmed = prev.filter((s) => s.timestamp >= sCutoff);
         return trimmed.length === prev.length ? prev : trimmed;
       });
     }, 1_000);
     return () => clearInterval(id);
   }, []);
 
+  /**
+   * Hold timer. Decoupled from `setHoldMs` rapid loop in the button to keep
+   * the render once-per-frame, while still letting the button drive its
+   * progress ring smoothly.
+   *
+   * The initial reset to 0 is performed in the start handler (see
+   * `handleHoldChange`) to avoid synchronous setState in this effect body.
+   */
+  useEffect(() => {
+    if (!isHolding) {
+      const id = setTimeout(() => setHoldMs(0), 4_000);
+      return () => clearTimeout(id);
+    }
+    const start = Date.now();
+    const id = setInterval(() => {
+      setHoldMs(Date.now() - start);
+    }, 100);
+    return () => clearInterval(id);
+  }, [isHolding]);
+
+  const handleHoldChange = useCallback((holding: boolean) => {
+    if (holding) setHoldMs(0);
+    setIsHolding(holding);
+  }, []);
+
   const tap = useCallback(async () => {
-    const now = Date.now();
-    const wait = lastTapRef.current + MIN_TAP_INTERVAL_MS - now;
+    const nowTs = Date.now();
+    const wait = lastTapRef.current + MIN_TAP_INTERVAL_MS - nowTs;
     if (wait > 0) {
       await new Promise((r) => setTimeout(r, wait));
     }
     lastTapRef.current = Date.now();
+    const startedAt = performance.now();
     try {
       const res = await fetch("/api/work", {
         method: "POST",
@@ -137,17 +244,42 @@ export default function Home() {
         headers: { "Content-Type": "application/json" },
         body: "{}",
       });
+      const latencyMs = performance.now() - startedAt;
       if (!res.ok) {
         if (mountedRef.current) setErrorCount((c) => c + 1);
         return;
       }
       const body = (await res.json()) as WorkResponse;
       if (!mountedRef.current) return;
-      setSamples((prev) => {
-        const next = [...prev, { timestamp: body.timestamp, durationMs: body.durationMs }];
-        const cutoff = Date.now() - SAMPLE_WINDOW_MS;
-        return next.filter((s) => s.timestamp >= cutoff);
+
+      const podStart = podStartCacheRef.current.get(body.podName) ?? null;
+      const ageMs =
+        podStart === null ? Number.POSITIVE_INFINITY : Date.now() - podStart;
+      const fingerprint = seenPodsRef.current.get(body.podName);
+      const isFirstSeenForPod =
+        !fingerprint || (podStart !== null && fingerprint.startTime !== podStart);
+
+      // First reply from a freshly-spawned pod whose age is below the
+      // cold-start threshold. We only count it once so a long string of
+      // taps doesn't pollute the cold-start metric.
+      if (isFirstSeenForPod && ageMs <= COLD_START_AGE_MS) {
+        const sample = { timestamp: body.timestamp, latencyMs };
+        setColdStartSamples((prev) => [...prev, sample]);
+      }
+
+      if (ageMs >= STEADY_STATE_MIN_AGE_MS) {
+        setSteadySamples((prev) => {
+          const next = [...prev, { timestamp: body.timestamp, latencyMs }];
+          return trimSamples(next, Date.now() - SAMPLE_WINDOW_MS);
+        });
+      }
+
+      seenPodsRef.current.set(body.podName, {
+        startTime: podStart ?? 0,
+        firstSeenLatencyMs:
+          fingerprint?.firstSeenLatencyMs ?? latencyMs,
       });
+
       setTotalTaps((t) => t + 1);
     } catch {
       if (mountedRef.current) setErrorCount((c) => c + 1);
@@ -155,73 +287,132 @@ export default function Home() {
   }, []);
 
   const stats = useMemo(() => {
-    const recent = samples.filter((s) => s.timestamp >= now - 10_000);
-    const rps = recent.length / 10;
-    const sorted = samples
-      .map((s) => s.durationMs)
+    const recentCutoff = now - 10_000;
+    const recentTaps = steadySamples.filter((s) => s.timestamp >= recentCutoff).length +
+      coldStartSamples.filter((s) => s.timestamp >= recentCutoff).length;
+    const rps = recentTaps / 10;
+
+    const sortedSteady = steadySamples
+      .map((s) => s.latencyMs)
       .sort((a, b) => a - b);
-    const p95 =
-      sorted.length === 0
+    const steadyP95 =
+      sortedSteady.length === 0
         ? null
-        : sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * 0.95))];
-    return { rps, p95 };
-  }, [samples, now]);
+        : sortedSteady[Math.min(sortedSteady.length - 1, Math.floor(sortedSteady.length * 0.95))];
+
+    // Cold start: median of recent cold-start samples — using a single
+    // outlier would be misleading. p50 is plenty of signal for a demo.
+    const sortedCold = coldStartSamples
+      .map((s) => s.latencyMs)
+      .sort((a, b) => a - b);
+    const coldStart =
+      sortedCold.length === 0
+        ? null
+        : sortedCold[Math.floor(sortedCold.length / 2)];
+
+    return { rps, steadyP95, coldStart };
+  }, [steadySamples, coldStartSamples, now]);
 
   const readyPods = pods.filter((p) => p.ready).length;
+  const target = hpa?.targetCpuPercent ?? 50;
+  const maxReplicas = hpa?.maxReplicas ?? 10;
 
   return (
     <main className="relative mx-auto flex min-h-dvh w-full max-w-3xl flex-col items-center gap-6 px-4 py-6 sm:py-10">
       <header className="flex w-full flex-col items-center gap-2 text-center">
-        <p className="text-[11px] font-medium uppercase tracking-[0.3em] text-white/50">
-          kubernetes horizontal pod autoscaler
-        </p>
-        <h1 className="bg-gradient-to-r from-rose-300 via-fuchsia-300 to-sky-300 bg-clip-text font-mono text-3xl font-bold tracking-tight text-transparent sm:text-4xl">
+        <div className="flex w-full items-start justify-between gap-3">
+          <span aria-hidden className="w-16" />
+          <p className="text-[11px] font-medium uppercase tracking-[0.3em] text-white/55">
+            Live Kubernetes HPA Demo
+          </p>
+          <RedHatBadge />
+        </div>
+        <h1 className="font-mono text-2xl font-bold tracking-tight text-white sm:text-3xl">
           Autoscale Arena
+          <span className="block text-base font-medium text-white/70 sm:text-lg">
+            Live on{" "}
+            <span style={{ color: RH_RED }} className="font-semibold">
+              Red Hat OpenShift
+            </span>
+          </span>
         </h1>
-        <p className="max-w-md text-sm text-white/70">
-          Hold the button to push CPU into the worker pods. Watch OpenShift spin them up, then wind
-          them down when you let go.
+        <p className="max-w-md text-xs text-white/55">
+          Powered by Horizontal Pod Autoscaler, Routes, and Source-to-Image
         </p>
         <ConnectionBadge state={connectionState} source={source} />
       </header>
 
-      <TapButton onTap={tap} isHolding={isHolding} onHoldChange={setIsHolding} />
+      <HoldButton
+        onTap={tap}
+        isHolding={isHolding}
+        onHoldChange={handleHoldChange}
+        holdMs={holdMs}
+      />
 
-      <StatsBar
+      <CpuGauge hpa={hpa} />
+
+      <MetricsBlock
         podCount={readyPods}
+        hpa={hpa}
+        coldStartMs={stats.coldStart}
+        steadyP95Ms={stats.steadyP95}
         rps={stats.rps}
-        p95Ms={stats.p95}
-        totalTaps={totalTaps}
         errorCount={errorCount}
       />
 
       <section aria-labelledby="pods-heading" className="w-full">
         <div className="mb-2 flex items-baseline justify-between">
-          <h2 id="pods-heading" className="text-sm font-semibold text-white/80">
+          <h2
+            id="pods-heading"
+            className="flex items-center gap-1.5 text-sm font-semibold text-white/80"
+          >
             Worker pods
+            <Tooltip
+              label="About worker pods"
+              text="Each pod runs the same container image, built once via Source-to-Image and shared between the frontend and worker Deployments."
+            />
           </h2>
           <span className="text-xs font-mono text-white/50">
-            {readyPods} ready · {pods.length} total
+            {readyPods} ready · {pods.length} total · {totalTaps} taps
           </span>
         </div>
         <PodGrid pods={pods} />
       </section>
 
-      <section aria-labelledby="rps-heading" className="w-full">
+      <section aria-labelledby="history-heading" className="w-full">
         <div className="mb-2 flex items-baseline justify-between">
-          <h2 id="rps-heading" className="text-sm font-semibold text-white/80">
-            Requests per second (60s)
+          <h2
+            id="history-heading"
+            className="flex items-center gap-1.5 text-sm font-semibold text-white/80"
+          >
+            Scale history (3 min)
+            <Tooltip
+              label="About scale history"
+              text="Pod count (green, left axis, step) and CPU utilization (red, right axis, smooth). When CPU crosses the dashed target, the green step rises shortly after."
+            />
           </h2>
           <span className="text-xs font-mono text-white/50">
-            p95 {stats.p95 === null ? "—" : `${Math.round(stats.p95)}ms`}
+            {hpa?.currentReplicas ?? readyPods} → {hpa?.desiredReplicas ?? readyPods}
           </span>
         </div>
-        <RpsChart samples={samples} />
+        <ScaleHistoryChart
+          samples={scaleHistory}
+          targetCpuPercent={target}
+          maxReplicas={maxReplicas}
+        />
       </section>
 
-      <HpaHint source={source} />
+      <Footer source={source} />
     </main>
   );
+}
+
+function trimSamples(samples: LatencySample[], cutoff: number): LatencySample[] {
+  let firstKeep = 0;
+  while (firstKeep < samples.length && samples[firstKeep].timestamp < cutoff) {
+    firstKeep += 1;
+  }
+  return firstKeep === 0 ? samples : samples.slice(firstKeep);
 }
 
 function ConnectionBadge({
@@ -239,31 +430,72 @@ function ConnectionBadge({
       : state === "retrying"
         ? "reconnecting…"
         : "connecting…";
-  const color =
-    state === "open"
-      ? source === "mock"
-        ? "bg-amber-400/80"
-        : "bg-emerald-400"
-      : "bg-slate-400";
+  const liveOnCluster = state === "open" && source !== "mock";
   return (
-    <div className="flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-3 py-1 text-[11px] text-white/70">
-      <span className={`h-2 w-2 rounded-full ${color}`} aria-hidden />
+    <div
+      className="flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-3 py-1 text-[11px] text-white/70"
+      style={liveOnCluster ? { borderColor: `${RH_RED}66` } : undefined}
+    >
+      <span
+        className={[
+          "h-2 w-2 rounded-full",
+          state === "open"
+            ? source === "mock"
+              ? "bg-amber-400/80"
+              : "animate-pulse motion-reduce:animate-none"
+            : "bg-slate-400",
+        ].join(" ")}
+        style={liveOnCluster ? { backgroundColor: RH_RED, boxShadow: `0 0 8px ${RH_RED}` } : undefined}
+        aria-hidden
+      />
       <span className="font-mono">{label}</span>
     </div>
   );
 }
 
-function HpaHint({ source }: { source: "cluster" | "mock" | "loading" }) {
-  if (source === "mock") {
-    return (
-      <p className="text-center text-xs text-white/50">
-        Running with mock pod data — deploy to OpenShift to see the HPA react to real traffic.
-      </p>
-    );
-  }
+function RedHatBadge() {
   return (
-    <p className="text-center text-xs text-white/50">
-      HPA target: 50% CPU · scale 1–10 pods · slow scale-down so you can watch it happen.
-    </p>
+    <span
+      className="inline-flex items-center gap-1.5 rounded border px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-[0.18em]"
+      style={{ borderColor: RH_RED, color: RH_RED }}
+      aria-label="Red Hat OpenShift"
+    >
+      <RedHatFedora />
+      OpenShift
+    </span>
+  );
+}
+
+function RedHatFedora() {
+  return (
+    <svg
+      viewBox="0 0 32 32"
+      width="14"
+      height="14"
+      aria-hidden
+      fill={RH_RED}
+    >
+      <path d="M21.5 18c2.4 0 4.4-.4 4.4-1.6 0-1-1-1.7-1-2.7C24.9 9.5 21.7 5 16 5 9.4 5 5 8.7 5 11.5c0 .9.4 1.4.9 2 .8.6 2.7 1.4 5 1.4 1.5 0 2.7-.4 3.7-1.1l-.3.1c-1 .4-2.7.6-4 .6-3.6 0-6.5-1.6-6.5-3.5 0-3.5 5-7 11.2-7 6.7 0 10.6 4.3 10.8 8.1 0 .8.5 1.6 1 2 .3.4.7.7.7 1.2 0 .8-.7 1.7-2 2.7H21.5z" />
+      <path d="M25.4 17.1c.4-1 .6-2 .6-3 0-1.6-.5-3-1.4-4.3.7 1.7 1.1 3.6 1 5.4-.1 1.4-.5 2.6-1.2 3.6.4-.3.7-.6 1-.9.7-.8 1-1.6 0-.8z" />
+    </svg>
+  );
+}
+
+function Footer({ source }: { source: "cluster" | "mock" | "loading" }) {
+  return (
+    <footer className="mt-2 flex w-full flex-col items-center gap-2 border-t border-white/10 pt-4 text-center text-[11px] text-white/50">
+      <p>
+        Deployed on{" "}
+        <span style={{ color: RH_RED }} className="font-semibold">
+          Red Hat OpenShift Developer Sandbox
+        </span>{" "}
+        · Built with Next.js, S2I, and the Kubernetes API
+      </p>
+      <p className="font-mono text-[10px] text-white/35">
+        {source === "mock"
+          ? "Running with mock pod data — deploy to OpenShift to see the HPA react to real traffic."
+          : "HPA target 50% CPU · scale 1–10 pods · scale-down stabilization 60s · Route exposed via OpenShift HAProxy"}
+      </p>
+    </footer>
   );
 }

@@ -56,7 +56,9 @@ export function resolvePodSource(): PodSource {
 }
 
 export function mockPods(): PodInfo[] {
-  const host = process.env.HOSTNAME ?? "local-worker-0";
+  // Match the fallback in `runCpuWork`'s response so the client can correlate
+  // a tap with the pod that handled it during local dev.
+  const host = process.env.HOSTNAME ?? "local-worker";
   return [
     {
       name: host,

@@ -3,43 +3,7 @@
 @theme {
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
-}
-
-@keyframes pod-in {
-  from {
-    opacity: 0;
-    transform: translateY(6px) scale(0.96);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0) scale(1);
-  }
-}
-
-@keyframes tap-ring {
-  from {
-    opacity: 0.8;
-    transform: scale(1);
-  }
-  to {
-    opacity: 0;
-    transform: scale(1.6);
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  @keyframes pod-in {
-    from,
-    to {
-      opacity: 1;
-      transform: none;
-    }
-  }
-  @keyframes tap-ring {
-    from,
-    to {
-      opacity: 0;
-      transform: scale(1);
-    }
-  }
+  /* Red Hat brand red for accent highlights. Used inline via style props on
+     a few elements; named here so it's findable in one place. */
+  --color-rh-red: #ee0000;
 }
