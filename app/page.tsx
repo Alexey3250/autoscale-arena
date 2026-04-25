@@ -2,7 +2,6 @@
 
 import dynamic from "next/dynamic";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { CpuGauge } from "@/components/CpuGauge";
 import { HoldButton } from "@/components/HoldButton";
 import { MetricsBlock } from "@/components/MetricsBlock";
 import { PodGrid } from "@/components/PodGrid";
@@ -351,8 +350,6 @@ export default function Home() {
         onHoldChange={handleHoldChange}
         holdMs={holdMs}
       />
-
-      <CpuGauge hpa={hpa} />
 
       <MetricsBlock
         podCount={readyPods}
