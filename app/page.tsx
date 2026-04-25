@@ -8,12 +8,6 @@ import { MetricsBlock } from "@/components/MetricsBlock";
 import { PodGrid } from "@/components/PodGrid";
 import { Tooltip } from "@/components/Tooltip";
 import type { ScaleSample } from "@/components/ScaleHistoryChart";
-import {
-  instantaneousCpuPercent,
-  smoothCpu,
-  trimRequestSamples,
-  type RequestSample,
-} from "@/lib/derivedMetrics";
 import type { HpaStatus, PodInfo, PodsSnapshot, WorkResponse } from "@/lib/types";
 
 const ScaleHistoryChart = dynamic(
@@ -36,15 +30,6 @@ const COLD_START_AGE_MS = 12_000;
 // Steady-state samples come only from pods this old or older — keeps the
 // metric clean of cold-start outliers.
 const STEADY_STATE_MIN_AGE_MS = 30_000;
-// Window over which we sum request CPU time to estimate live utilisation.
-// 1s matches what the spec describes — short enough to be reactive, long
-// enough that one slow request doesn't pin the gauge to 100%.
-const DERIVED_CPU_WINDOW_MS = 1_000;
-// How long we keep individual request samples in memory. A few seconds is
-// plenty since the smoother only looks at the last DERIVED_CPU_WINDOW_MS.
-const REQUEST_BUFFER_MS = 4_000;
-// 10Hz smoothing tick. Pairs with alpha=0.3 to give a settle time of ~1s.
-const DERIVED_CPU_TICK_MS = 100;
 // 1Hz scale-history sampling. Coarser than the smoother — the chart
 // horizon is 2-3 minutes so per-second granularity is more than enough.
 const SCALE_SAMPLE_TICK_MS = 1_000;
@@ -78,7 +63,6 @@ export default function Home() {
   const [errorCount, setErrorCount] = useState(0);
   const [isHolding, setIsHolding] = useState(false);
   const [holdMs, setHoldMs] = useState(0);
-  const [derivedCpu, setDerivedCpu] = useState(0);
   const [connectionState, setConnectionState] = useState<"connecting" | "open" | "retrying">(
     "connecting",
   );
@@ -88,10 +72,8 @@ export default function Home() {
   const podStartCacheRef = useRef<Map<string, number>>(new Map());
   const podsByNameRef = useRef<Map<string, PodInfo>>(new Map());
   const seenPodsRef = useRef<Map<string, PodFingerprint>>(new Map());
-  // Refs read by the 10Hz/1Hz tickers below — kept in refs so the
-  // intervals don't have to re-bind on every render.
-  const requestSamplesRef = useRef<RequestSample[]>([]);
-  const derivedCpuRef = useRef(0);
+  // Refs read by the 1Hz scale-history ticker below — kept in refs so the
+  // interval doesn't have to re-bind on every render.
   const readyPodCountRef = useRef(1);
   const hpaRef = useRef<HpaStatus | null>(null);
 
@@ -111,7 +93,7 @@ export default function Home() {
    * synchronously look up a pod's startTime by name without waiting for the
    * next React render. We also keep a cache of startTimes (epoch ms) so we
    * can age-test deleted pods that respond after they've been removed from
-   * the visible state, and a ready-count ref for the derived-CPU divisor.
+   * the visible state, and a ready-count ref for the 1Hz scale sampler.
    */
   const applyPods = useCallback((next: PodInfo[]) => {
     podsByNameRef.current = new Map(next.map((p) => [p.name, p]));
@@ -187,34 +169,6 @@ export default function Home() {
     };
   }, [applyPods]);
 
-  /**
-   * 10Hz smoother: turns the spiky per-tap buffer into a continuous
-   * value the gauge can interpolate against. Reads from refs only — no
-   * dependency on React state — so it doesn't churn on every tap.
-   */
-  useEffect(() => {
-    const id = setInterval(() => {
-      const nowTs = Date.now();
-      // Trim the buffer in place; we only need a few seconds of history.
-      requestSamplesRef.current = trimRequestSamples(
-        requestSamplesRef.current,
-        nowTs - REQUEST_BUFFER_MS,
-      );
-      const raw = instantaneousCpuPercent(
-        requestSamplesRef.current,
-        nowTs,
-        DERIVED_CPU_WINDOW_MS,
-        readyPodCountRef.current,
-      );
-      const smoothed = smoothCpu(derivedCpuRef.current, raw, 0.3);
-      derivedCpuRef.current = smoothed;
-      // Round to 1 decimal so React doesn't repaint for sub-tenth jitter.
-      const rounded = Math.round(smoothed * 10) / 10;
-      setDerivedCpu((prev) => (prev === rounded ? prev : rounded));
-    }, DERIVED_CPU_TICK_MS);
-    return () => clearInterval(id);
-  }, []);
-
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
     /**
@@ -236,8 +190,7 @@ export default function Home() {
       const sample: ScaleSample = {
         timestamp: nowTs,
         podCount: readyPodCountRef.current,
-        cpuObserved: hpaRef.current?.currentCpuPercent ?? null,
-        cpuDerived: Math.round(derivedCpuRef.current * 10) / 10,
+        cpuPercent: hpaRef.current?.currentCpuPercent ?? null,
       };
       setScaleHistory((prev) => {
         const sCutoff = nowTs - SCALE_HISTORY_WINDOW_MS;
@@ -298,13 +251,6 @@ export default function Home() {
       }
       const body = (await res.json()) as WorkResponse;
       if (!mountedRef.current) return;
-
-      // Feed the live derived-CPU estimator. Push synchronously into the
-      // ref buffer; the 10Hz smoother above will read it on its next tick.
-      requestSamplesRef.current.push({
-        timestamp: body.timestamp,
-        durationMs: body.durationMs,
-      });
 
       const podStart = podStartCacheRef.current.get(body.podName) ?? null;
       const ageMs =
@@ -406,7 +352,7 @@ export default function Home() {
         holdMs={holdMs}
       />
 
-      <CpuGauge primary={derivedCpu} secondary={hpa} target={target} />
+      <CpuGauge hpa={hpa} />
 
       <MetricsBlock
         podCount={readyPods}
@@ -445,7 +391,7 @@ export default function Home() {
             Scale history (3 min)
             <Tooltip
               label="About scale history"
-              text="Green step = pod count. Solid red = live derived CPU. Dashed red = HPA-observed CPU (15–30s lag). When the solid line crosses the target, the dashed line follows ~20s later, then the green step jumps."
+              text="Pod count (green, left axis, step) and HPA-observed CPU (red, right axis). When CPU crosses the dashed target, the green step rises shortly after — that's the autoscaler reacting."
             />
           </h2>
           <span className="text-xs font-mono text-white/50">

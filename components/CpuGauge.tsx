@@ -4,51 +4,27 @@ import type { HpaStatus } from "@/lib/types";
 import { Tooltip } from "./Tooltip";
 
 interface CpuGaugeProps {
-  /**
-   * Live, derived CPU estimate in percent. Always a number — the client
-   * can compute this from finished worker requests even when the HPA is
-   * unreachable, so the gauge always has something to show.
-   */
-  primary: number;
-  /**
-   * What the HPA controller actually sees. Lags `primary` by 15-30s due
-   * to metrics-server scrape intervals; we surface that lag in the UI.
-   */
-  secondary: HpaStatus | null;
-  /** Target % from HPA spec. Falls back to 50 when secondary is null. */
-  target: number;
+  hpa: HpaStatus | null;
 }
 
 const RH_RED = "#EE0000";
-const SCALE_UP_LAG_THRESHOLD = 15;
 
 /**
- * Linear gauge with two layers of meaning:
- *   - Big number + filled bar: the *derived* live CPU estimate (reacts
- *     within a tap).
- *   - Small annotation: the HPA's observed CPU (15-30s behind reality).
- *   - Optional "scale-up coming" hint when the live number runs ahead of
- *     the HPA reading by enough that scale-up is imminent.
- *
- * Sized for mobile: bar fills the column, label/legend stack vertically.
+ * Linear gauge of HPA-observed CPU utilisation across worker pods, with a
+ * marker at the configured target. This is the same number `oc get hpa`
+ * reports — metrics-server scrapes pods every ~15s and the controller
+ * smooths it, so it lags the live load by 15–30s. We surface that lag in
+ * the tooltip rather than trying to invent a real-time substitute.
  */
-export function CpuGauge({ primary, secondary, target }: CpuGaugeProps) {
-  const observed = secondary?.currentCpuPercent ?? null;
-  // Cap the visual scale at 110% so the target marker never gets pinned
+export function CpuGauge({ hpa }: CpuGaugeProps) {
+  const cpu = hpa?.currentCpuPercent ?? null;
+  const target = hpa?.targetCpuPercent ?? 50;
+  // Cap visual scale so a saturated single pod doesn't pin the marker
   // against the right edge.
-  const max = Math.max(110, primary + 10);
-  const primaryPct = (primary / max) * 100;
+  const max = Math.max(110, (cpu ?? 0) + 10);
+  const cpuPct = cpu === null ? 0 : (cpu / max) * 100;
   const targetPct = (target / max) * 100;
-  const overTarget = primary > target;
-  const lag = observed === null ? 0 : Math.max(0, primary - observed);
-  const showScaleUp =
-    observed !== null && lag >= SCALE_UP_LAG_THRESHOLD && primary > target;
-  const observedLabel =
-    observed === null
-      ? secondary?.error && secondary.error !== "mock"
-        ? "HPA: unavailable"
-        : "HPA observes: —"
-      : `HPA observes: ${Math.round(observed)}% (15–30s lag)`;
+  const overTarget = cpu !== null && cpu > target;
 
   return (
     <section
@@ -63,7 +39,7 @@ export function CpuGauge({ primary, secondary, target }: CpuGaugeProps) {
           CPU utilization
           <Tooltip
             label="What is CPU utilization?"
-            text="Estimated CPU load based on observed request latency × throughput ÷ pod count. Updates in real time."
+            text="The same number `oc get hpa` reports: average CPU across worker pods as a percent of each pod's CPU request. metrics-server scrapes every 15s, so the gauge lags real load by 15–30s. The HPA scales when this exceeds the target."
           />
         </h2>
         <span className="font-mono text-[11px] text-white/50">
@@ -77,27 +53,26 @@ export function CpuGauge({ primary, secondary, target }: CpuGaugeProps) {
           }`}
           style={{ ["--rh-red" as string]: RH_RED }}
         >
-          {Math.round(primary)}%
+          {cpu === null ? "—" : `${Math.round(cpu)}%`}
         </span>
         <span className="font-mono text-sm text-white/50">/ {target}% target</span>
       </div>
       <div
         className="relative mt-3 h-3 overflow-hidden rounded-full bg-white/10"
         role="meter"
-        aria-valuenow={Math.round(primary)}
+        aria-valuenow={cpu ?? 0}
         aria-valuemin={0}
-        aria-valuemax={Math.round(max)}
-        aria-label={`Estimated CPU utilization ${Math.round(primary)} percent`}
+        aria-valuemax={max}
+        aria-label={`CPU utilization ${cpu === null ? "unknown" : `${Math.round(cpu)} percent`}`}
       >
         <div
-          className="h-full rounded-full motion-reduce:transition-none"
+          className="h-full rounded-full transition-[width] duration-500 ease-out motion-reduce:transition-none"
           style={{
-            width: `${primaryPct}%`,
+            width: `${cpuPct}%`,
             background: overTarget
               ? `linear-gradient(90deg, ${RH_RED}, #f97316)`
               : "linear-gradient(90deg, #22d3ee, #38bdf8)",
             boxShadow: overTarget ? `0 0 14px ${RH_RED}99` : undefined,
-            transition: "width 120ms linear, background 200ms ease-out",
           }}
         />
         <div
@@ -110,32 +85,17 @@ export function CpuGauge({ primary, secondary, target }: CpuGaugeProps) {
           aria-hidden
         />
       </div>
-      <div className="mt-2 flex items-center gap-1.5 text-[11px] text-white/55">
-        <span className="font-mono">{observedLabel}</span>
-        <Tooltip
-          label="Why is the HPA reading delayed?"
-          text="What the HPA controller actually sees — metrics-server scrapes pods every 15s, so this lags behind the live load by 15–30 seconds. This is why scale-up takes time."
-        />
-        {showScaleUp && (
-          <span
-            className="ml-auto font-mono font-semibold"
-            style={{ color: RH_RED }}
-          >
-            ↑ scale-up coming
-          </span>
-        )}
-      </div>
       <footer className="mt-2 flex items-center justify-between text-[11px] text-white/55">
         <span className="font-mono">
-          {secondary?.currentReplicas ?? "—"} → {secondary?.desiredReplicas ?? "—"} replicas
+          {hpa?.currentReplicas ?? "—"} → {hpa?.desiredReplicas ?? "—"} replicas
         </span>
         <span className="font-mono">
-          min {secondary?.minReplicas ?? "—"} · max {secondary?.maxReplicas ?? "—"}
+          min {hpa?.minReplicas ?? "—"} · max {hpa?.maxReplicas ?? "—"}
         </span>
       </footer>
-      {secondary?.error && secondary.error !== "mock" && (
+      {hpa?.error && hpa.error !== "mock" && (
         <p className="mt-2 text-[11px] text-amber-300/80">
-          HPA read failed ({secondary.error}). Showing live derived load only.
+          HPA read failed ({hpa.error}). Showing pod data only.
         </p>
       )}
     </section>
