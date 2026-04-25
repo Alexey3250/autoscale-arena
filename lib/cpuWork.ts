@@ -1,10 +1,16 @@
-import { createHash, randomBytes } from "node:crypto";
+import { createHash } from "node:crypto";
 
-// Baseline iterations tuned to roughly ~200ms of CPU on a mid-range 2024 x86
-// core. The worker deployment requests 500m CPU, so this keeps a single
-// request in the ~40-50% CPU range per pod, giving the HPA room to scale once
-// a handful of concurrent requests pile on.
-const BASELINE_ITERATIONS = 1_500_000;
+// Calibrated for the OpenShift Developer Sandbox, where each pod's CPU
+// quota is small and shared. 20k sha256 rounds returns in ~100-300ms there
+// and ~10-30ms on a developer laptop. Anything bigger starves liveness
+// probes and the user-visible latency feels broken.
+const DEFAULT_ITERATIONS = 20_000;
+
+// Hashes per synchronous chunk before we yield to the event loop. With
+// 1k iterations per chunk, the longest synchronous block on the sandbox
+// is ~10-15ms — small enough that an incoming /api/health request is
+// served well within its 5s probe timeout even under sustained load.
+const CHUNK_SIZE = 1_000;
 
 export interface WorkResult {
   durationMs: number;
@@ -12,21 +18,34 @@ export interface WorkResult {
 }
 
 /**
- * Run a deterministic CPU-bound sha256 loop. Intensity multiplies the baseline
- * iteration count. We don't vary per-request input to keep comparisons fair.
+ * CPU-bound sha256 loop, async + chunked. Each chunk runs synchronously
+ * (we want the CPU to be busy — that's the whole point) but between
+ * chunks we yield via `setImmediate`, which lets the Node HTTP listener
+ * pick up health probes, SSE writes, and other concurrent work.
+ *
+ * `intensity` multiplies the iteration count and is clamped by the route
+ * handler (0.25–5×) so a buggy or hostile client can't pin a worker.
  */
-export function runCpuWork(intensity = 1): WorkResult {
-  const iterations = Math.max(1, Math.floor(BASELINE_ITERATIONS * intensity));
-  const seed = randomBytes(32);
+export async function runCpuWork(intensity = 1): Promise<WorkResult> {
+  const iterations = Math.max(1, Math.floor(DEFAULT_ITERATIONS * intensity));
   const start = performance.now();
-  let digest = seed;
-  for (let i = 0; i < iterations; i++) {
-    digest = createHash("sha256").update(digest).digest();
+  let i = 0;
+  let lastByte = 0;
+  while (i < iterations) {
+    const end = Math.min(i + CHUNK_SIZE, iterations);
+    for (; i < end; i++) {
+      // Independent inputs (rather than chained digests) match the simpler
+      // pattern in the spec and don't change the CPU profile meaningfully —
+      // sha256 of a small string still bottoms out in OpenSSL.
+      lastByte = createHash("sha256").update(String(i)).digest()[0];
+    }
+    if (i < iterations) {
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    }
   }
-  // Touch the final digest so V8 cannot dead-code-eliminate the loop.
-  globalThis.__lastDigestByte = digest[0];
-  const durationMs = performance.now() - start;
-  return { durationMs, iterations };
+  // Touch the final byte so V8 cannot dead-code-eliminate the loop.
+  globalThis.__lastDigestByte = lastByte;
+  return { durationMs: performance.now() - start, iterations };
 }
 
 declare global {

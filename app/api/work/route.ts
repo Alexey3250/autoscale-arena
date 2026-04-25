@@ -23,7 +23,7 @@ export async function POST(request: Request): Promise<Response> {
   }
 
   const intensity = await readIntensity(request);
-  const { durationMs, iterations } = runCpuWork(intensity);
+  const { durationMs, iterations } = await runCpuWork(intensity);
   const timestamp = Date.now();
   recordWork({ timestamp, durationMs });
 
