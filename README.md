@@ -8,6 +8,23 @@ A live, interactive demo of the Horizontal Pod Autoscaler — built end-to-end o
 
 [**Why OpenShift**](#why-openshift-not-just-kubernetes) · [**The demo**](#the-demo-narrated) · [**Deploy in 5 minutes**](#deploy-in-5-minutes) · [**Architecture**](#architecture)
 
+
+### This short demo shows RedHat OpenShift autoscaling a worker deployment under generated load. As load increases, worker CPU rises, the Horizontal Pod Autoscaler adds replicas, and the UI tracks pod state and scale history live.
+
+![Autoscale Arena scaling preview](dashboard-scaling.png)
+
+[Watch the 35-second demo video](autoscale-arena-demo.mp4)
+
+**What to watch:**
+
+- Load increases through the UI
+- Worker CPU rises
+- HPA scales worker pods up
+- Pod state updates live from the Kubernetes API
+- Scale history changes as the cluster reacts
+
+**Stack:** Next.js · TypeScript · Tailwind · OpenShift
+**Live:** [Link](https://autoscale-arena-frontend-alexeyefimik-dev.apps.rm1.0a51.p1.openshiftapps.com/)
 <sub>Built with Next.js 16 · Tailwind v4 · `@kubernetes/client-node` · Recharts · Framer Motion</sub>
 
 </div>
