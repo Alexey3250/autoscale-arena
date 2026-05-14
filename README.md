@@ -23,8 +23,9 @@ A live, interactive demo of the Horizontal Pod Autoscaler — built end-to-end o
 - Pod state updates live from the Kubernetes API
 - Scale history changes as the cluster reacts
 
-**Stack:** Next.js · TypeScript · Tailwind · OpenShift
+
 **Live:** [Link](https://autoscale-arena-frontend-alexeyefimik-dev.apps.rm1.0a51.p1.openshiftapps.com/)
+
 <sub>Built with Next.js 16 · Tailwind v4 · `@kubernetes/client-node` · Recharts · Framer Motion</sub>
 
 </div>
