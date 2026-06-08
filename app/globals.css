@@ -3,7 +3,7 @@
 @theme {
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
-  /* Red Hat brand red for accent highlights. Used inline via style props on
+  /* Platform red for accent highlights. Used inline via style props on
      a few elements; named here so it's findable in one place. */
   --color-rh-red: #ee0000;
 }

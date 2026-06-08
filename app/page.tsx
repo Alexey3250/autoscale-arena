@@ -326,7 +326,7 @@ export default function Home() {
             Live Kubernetes HPA Demo
           </p>
           <span className="absolute right-0 top-1/2 -translate-y-1/2">
-            <RedHatBadge />
+            <OpenShiftBadge />
           </span>
         </div>
         <h1 className="font-mono text-2xl font-bold tracking-tight text-white sm:text-3xl">
@@ -334,7 +334,7 @@ export default function Home() {
           <span className="block text-base font-medium text-white/70 sm:text-lg">
             Live on{" "}
             <span style={{ color: RH_RED }} className="font-semibold">
-              Red Hat OpenShift
+              OpenShift
             </span>
           </span>
         </h1>
@@ -546,31 +546,16 @@ function ConnectionBadge({
   );
 }
 
-function RedHatBadge() {
+function OpenShiftBadge() {
   return (
     <span
       className="inline-flex items-center gap-1.5 rounded border px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-[0.18em]"
       style={{ borderColor: RH_RED, color: RH_RED }}
-      aria-label="Red Hat OpenShift"
+      aria-label="OpenShift"
     >
-      <RedHatFedora />
+      <span className="h-2 w-2 rounded-sm" style={{ backgroundColor: RH_RED }} aria-hidden />
       OpenShift
     </span>
-  );
-}
-
-function RedHatFedora() {
-  return (
-    <svg
-      viewBox="0 0 32 32"
-      width="14"
-      height="14"
-      aria-hidden
-      fill={RH_RED}
-    >
-      <path d="M21.5 18c2.4 0 4.4-.4 4.4-1.6 0-1-1-1.7-1-2.7C24.9 9.5 21.7 5 16 5 9.4 5 5 8.7 5 11.5c0 .9.4 1.4.9 2 .8.6 2.7 1.4 5 1.4 1.5 0 2.7-.4 3.7-1.1l-.3.1c-1 .4-2.7.6-4 .6-3.6 0-6.5-1.6-6.5-3.5 0-3.5 5-7 11.2-7 6.7 0 10.6 4.3 10.8 8.1 0 .8.5 1.6 1 2 .3.4.7.7.7 1.2 0 .8-.7 1.7-2 2.7H21.5z" />
-      <path d="M25.4 17.1c.4-1 .6-2 .6-3 0-1.6-.5-3-1.4-4.3.7 1.7 1.1 3.6 1 5.4-.1 1.4-.5 2.6-1.2 3.6.4-.3.7-.6 1-.9.7-.8 1-1.6 0-.8z" />
-    </svg>
   );
 }
 
@@ -580,7 +565,7 @@ function Footer({ source }: { source: "cluster" | "mock" | "loading" }) {
       <p>
         Deployed on{" "}
         <span style={{ color: RH_RED }} className="font-semibold">
-          Red Hat OpenShift Developer Sandbox
+          OpenShift Developer Sandbox
         </span>{" "}
         · Built with Next.js, S2I, and the Kubernetes API
       </p>

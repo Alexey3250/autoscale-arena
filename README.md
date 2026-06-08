@@ -2,14 +2,14 @@
 
 # Autoscale Arena
 
-### **Watch Red Hat OpenShift autoscale a workload from your phone.**
+### **Watch OpenShift autoscale a workload from your phone.**
 
 A live, interactive demo of the Horizontal Pod Autoscaler — built end-to-end on the OpenShift Developer Sandbox, deployed via Source-to-Image, exposed via a Route, and observed via the same Kubernetes API your cluster admin uses.
 
 [**Why OpenShift**](#why-openshift-not-just-kubernetes) · [**The demo**](#the-demo-narrated) · [**Deploy in 5 minutes**](#deploy-in-5-minutes) · [**Architecture**](#architecture)
 
 
-### This short demo shows RedHat OpenShift autoscaling a worker deployment under generated load. As load increases, worker CPU rises, the Horizontal Pod Autoscaler adds replicas, and the UI tracks pod state and scale history live.
+### This short demo shows OpenShift autoscaling a worker deployment under generated load. As load increases, worker CPU rises, the Horizontal Pod Autoscaler adds replicas, and the UI tracks pod state and scale history live.
 
 ![Autoscale Arena scaling preview](dashboard-scaling.png)
 
@@ -48,7 +48,7 @@ Every visible thing is real. There are no animations driven by `setTimeout`. The
 
 ## Why OpenShift, not just Kubernetes
 
-Vanilla Kubernetes hands you a kit. Red Hat OpenShift hands you an opinionated platform built on that kit, with the boring-but-essential pieces already wired up. This demo lives or dies on six of those pieces, all included:
+Vanilla Kubernetes hands you a kit. OpenShift hands you an opinionated platform built on that kit, with the boring-but-essential pieces already wired up. This demo lives or dies on six of those pieces, all included:
 
 | Capability | Vanilla K8s | OpenShift |
 |---|---|---|
@@ -135,7 +135,7 @@ That single command:
 3. Runs the first build immediately: clones the repo, runs `npm ci && npm run build`, layers the result onto the UBI Node.js base image, pushes the result to the internal registry.
 4. Creates a `Deployment`, a `Service`, and triggers wired to roll the deployment when a new image lands in the stream.
 
-No Dockerfile in the repo. The S2I builder image knows how to build Node.js apps. UBI9 is the result — a Red Hat hardened, supportable base image. Every subsequent `git push` followed by `oc start-build` redeploys both the frontend and the worker (because both Deployments reference the same ImageStream tag).
+No Dockerfile in the repo. The S2I builder image knows how to build Node.js apps and produces a hardened, supportable base image. Every subsequent `git push` followed by `oc start-build` redeploys both the frontend and the worker (because both Deployments reference the same ImageStream tag).
 
 ### `ImageStream` — internal registry with rollout triggers
 
@@ -234,7 +234,7 @@ Phone browser
 
 ## Deploy in 5 minutes
 
-You need an OpenShift cluster. The free [Developer Sandbox](https://developers.redhat.com/developer-sandbox) works — that's what this demo runs on.
+You need an OpenShift cluster. The free OpenShift Developer Sandbox works — that's what this demo runs on.
 
 ```bash
 oc login --server=<your-cluster> --token=<your-token>
@@ -288,7 +288,7 @@ You'll see a single mock pod called `local-worker-0`. Tapping the button runs th
 ```
 app/
 ├── page.tsx                        Client UI: hold button, pod grid, metrics, chart, SSE
-├── layout.tsx                      Dark theme, Red Hat branding, fonts
+├── layout.tsx                      Dark theme, platform styling, fonts
 ├── globals.css                     Tailwind v4 entry + how-it-works disclosure styles
 └── api/
     ├── work/route.ts               Worker: CPU loop · Frontend: proxy to worker Service
@@ -332,8 +332,8 @@ openshift/
 
 ## Built by Alexey Efimik
 
-Looking for a Solution Architect role at Red Hat or any company building on OpenShift. This demo is the kind of thing I want to do all day: take an abstract platform capability, build a tight feedback loop around it, and make the value visible to humans.
+I am interested in customer-facing solutions engineering and technical pre-sales roles where platform capabilities, integration constraints, and business value need to be made clear for stakeholders. This demo is the kind of work I enjoy: taking an abstract platform capability, building a tight feedback loop around it, and making the value visible to humans.
 
 [**Source on GitHub**](https://github.com/Alexey3250/autoscale-arena) · [**LinkedIn**](https://www.linkedin.com/in/efimik/) · [**Email**](mailto:a.efimik@gmail.com) · [**WhatsApp**](https://wa.me/971527846185)
 
-<sub>Deployed on Red Hat OpenShift Developer Sandbox. Container image built from this repo via Source-to-Image. Exposed via a Route with edge TLS termination. Scaled by the platform's built-in HorizontalPodAutoscaler against metrics-server samples. No external services were harmed in the making of this demo.</sub>
+<sub>Deployed on OpenShift Developer Sandbox. Container image built from this repo via Source-to-Image. Exposed via a Route with edge TLS termination. Scaled by the platform's built-in HorizontalPodAutoscaler against metrics-server samples. No external services were harmed in the making of this demo.</sub>

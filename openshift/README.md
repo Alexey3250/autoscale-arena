@@ -1,6 +1,6 @@
 # Deploying Autoscale Arena to OpenShift
 
-These steps deploy the app to a Red Hat OpenShift project (Developer Sandbox works) using the built-in Node.js S2I builder. You do not need cluster-admin. Run everything from the `openshift/` directory unless otherwise noted.
+These steps deploy the app to an OpenShift project (Developer Sandbox works) using the built-in Node.js S2I builder. You do not need cluster-admin. Run everything from the `openshift/` directory unless otherwise noted.
 
 ## Prerequisites
 

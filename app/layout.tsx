@@ -13,7 +13,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Autoscale Arena — Live on Red Hat OpenShift",
+  title: "Autoscale Arena — Live on OpenShift",
   description:
     "Hold the button on your phone. Watch the OpenShift HPA spin up worker pods in real time, with live CPU utilization, cold-start latency, and scale history.",
 };
