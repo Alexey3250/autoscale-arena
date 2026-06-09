@@ -42,7 +42,7 @@ It's a 90-second narrative that compresses the whole autoscaling story into a ph
 
 > Hold the button → CPU climbs → metrics-server scrapes → HPA reconciles → new pods spawn → CPU drops → release the button → cooldown → pods wind back down.
 
-Every visible thing is real. There are no animations driven by `setTimeout`. The pod grid is a live Watch on the Kubernetes API. The CPU number is what `oc get hpa` reports. The replica count is what the controller decided.
+Every visible thing is real. There are no animations driven by `setTimeout`. The pod grid is a live Watch on the Kubernetes API. The CPU/request number is what `oc get hpa` reports. The replica count is what the controller decided.
 
 ---
 
@@ -93,9 +93,9 @@ The HPA's spec says: keep average CPU across worker pods at 50%. Once metrics-se
 
 The frontend's SSE stream is a Watch against the Kubernetes API filtered by `app=autoscale-arena-worker`. As soon as a new pod hits `Pending`, then `ContainerCreating`, then `Running`, then `Ready`, an event fires and the UI animates a new card into the grid with a Framer Motion spring transition. Cards sort newest-first so the freshly-spawned pod lands at the top of the user's field of view.
 
-**7. Cold-start latency shows up as a separate metric.**
+**7. The page makes the HPA math visible.**
 
-The first request to a pod whose `startTime` is less than 12 seconds old gets bucketed into the cold-start sample buffer. Steady-state p95 is computed only from pods that have been up for 30+ seconds. Two metrics, two stories: "how slow is a fresh pod to first response?" and "how fast does a warm pod actually serve?"
+The CPU card and scale chart label the HPA's CPU value as CPU/request. If a worker requests 100m and the HPA reports 300%, that means the average worker pod is using about 300m, not 300% of a node. The chart pairs that line with ready pods and HPA desired replicas so the scale decision is visible before every new pod is Ready.
 
 **8. Release the button.**
 
@@ -300,8 +300,8 @@ app/
 components/
 ├── HoldButton.tsx                  Hold-to-load button with progress ring + narrative hints
 ├── PodGrid.tsx                     Live pod cards with Framer Motion animations
-├── MetricsBlock.tsx                Worker pods · CPU avg · cold start · steady-state p95
-├── ScaleHistoryChart.tsx           Combined pod-count step + HPA-observed CPU line
+├── MetricsBlock.tsx                Worker pods · HPA desired · CPU/request · warm p95
+├── ScaleHistoryChart.tsx           Ready pods + HPA desired + CPU/request history
 └── Tooltip.tsx                     Native-popover-based info tooltips
 lib/
 ├── k8s.ts                          KubeConfig + Watch + HPA reader, mock fallback

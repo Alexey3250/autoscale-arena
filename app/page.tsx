@@ -23,11 +23,8 @@ const SAMPLE_WINDOW_MS = 90_000;
 const SCALE_HISTORY_WINDOW_MS = 180_000;
 const STREAM_BACKOFF_MIN_MS = 500;
 const STREAM_BACKOFF_MAX_MS = 8_000;
-// A pod still counts as "warming up" while its age is below this threshold.
-// Calibrated against the worker readinessProbe (5s initial delay + 5s period).
-const COLD_START_AGE_MS = 12_000;
-// Steady-state samples come only from pods this old or older — keeps the
-// metric clean of cold-start outliers.
+// Serving-latency samples come only from pods this old or older, so new pods
+// joining during scale-up do not make normal request latency look worse.
 const STEADY_STATE_MIN_AGE_MS = 30_000;
 // 1Hz scale-history sampling. Coarser than the smoother — the chart
 // horizon is 2-3 minutes so per-second granularity is more than enough.
@@ -46,16 +43,11 @@ interface LatencySample {
   latencyMs: number;
 }
 
-interface PodFingerprint {
-  startTime: number; // epoch ms
-  firstSeenLatencyMs: number;
-}
-
 export default function Home() {
   const [pods, setPods] = useState<PodInfo[]>([]);
   const [hpa, setHpa] = useState<HpaStatus | null>(null);
   const [source, setSource] = useState<"cluster" | "mock" | "loading">("loading");
-  const [coldStartSamples, setColdStartSamples] = useState<LatencySample[]>([]);
+  const [tapSamples, setTapSamples] = useState<LatencySample[]>([]);
   const [steadySamples, setSteadySamples] = useState<LatencySample[]>([]);
   const [scaleHistory, setScaleHistory] = useState<ScaleSample[]>([]);
   const [totalTaps, setTotalTaps] = useState(0);
@@ -69,8 +61,6 @@ export default function Home() {
   const lastTapRef = useRef(0);
   const mountedRef = useRef(true);
   const podStartCacheRef = useRef<Map<string, number>>(new Map());
-  const podsByNameRef = useRef<Map<string, PodInfo>>(new Map());
-  const seenPodsRef = useRef<Map<string, PodFingerprint>>(new Map());
   // Refs read by the 1Hz scale-history ticker below — kept in refs so the
   // interval doesn't have to re-bind on every render.
   const readyPodCountRef = useRef(1);
@@ -88,14 +78,12 @@ export default function Home() {
   );
 
   /**
-   * Mirror the latest pod list to refs so the work-response handler can
-   * synchronously look up a pod's startTime by name without waiting for the
-   * next React render. We also keep a cache of startTimes (epoch ms) so we
-   * can age-test deleted pods that respond after they've been removed from
-   * the visible state, and a ready-count ref for the 1Hz scale sampler.
+   * Mirror startTimes (epoch ms) so the work-response handler can age-test a
+   * responding pod without waiting for the next React render. Deleted pods may
+   * still respond after leaving the visible grid, so the cache intentionally
+   * outlives the current pod list.
    */
   const applyPods = useCallback((next: PodInfo[]) => {
-    podsByNameRef.current = new Map(next.map((p) => [p.name, p]));
     readyPodCountRef.current = Math.max(1, next.filter((p) => p.ready).length);
     for (const pod of next) {
       if (pod.startTime) {
@@ -173,7 +161,7 @@ export default function Home() {
     /**
      * Combined 1Hz tick:
      *   - bump `now` so age-derived metrics tick forward,
-     *   - trim cold-start / steady-state buffers,
+     *   - trim request / serving-latency buffers,
      *   - append a scale-history sample and prune old ones.
      *
      * Single interval so we don't fight ourselves with multiple
@@ -183,13 +171,15 @@ export default function Home() {
       const nowTs = Date.now();
       setNow(nowTs);
       const cutoff = nowTs - SAMPLE_WINDOW_MS;
-      setColdStartSamples((prev) => trimSamples(prev, cutoff));
+      setTapSamples((prev) => trimSamples(prev, cutoff));
       setSteadySamples((prev) => trimSamples(prev, cutoff));
 
+      const currentHpa = hpaRef.current;
       const sample: ScaleSample = {
         timestamp: nowTs,
         podCount: readyPodCountRef.current,
-        cpuPercent: hpaRef.current?.currentCpuPercent ?? null,
+        desiredReplicas: currentHpa?.desiredReplicas ?? null,
+        cpuPercent: currentHpa?.currentCpuPercent ?? null,
       };
       setScaleHistory((prev) => {
         const sCutoff = nowTs - SCALE_HISTORY_WINDOW_MS;
@@ -254,30 +244,16 @@ export default function Home() {
       const podStart = podStartCacheRef.current.get(body.podName) ?? null;
       const ageMs =
         podStart === null ? Number.POSITIVE_INFINITY : Date.now() - podStart;
-      const fingerprint = seenPodsRef.current.get(body.podName);
-      const isFirstSeenForPod =
-        !fingerprint || (podStart !== null && fingerprint.startTime !== podStart);
-
-      // First reply from a freshly-spawned pod whose age is below the
-      // cold-start threshold. We only count it once so a long string of
-      // taps doesn't pollute the cold-start metric.
-      if (isFirstSeenForPod && ageMs <= COLD_START_AGE_MS) {
-        const sample = { timestamp: body.timestamp, latencyMs };
-        setColdStartSamples((prev) => [...prev, sample]);
-      }
+      const sample = { timestamp: body.timestamp, latencyMs };
+      const cutoff = Date.now() - SAMPLE_WINDOW_MS;
+      setTapSamples((prev) => trimSamples([...prev, sample], cutoff));
 
       if (ageMs >= STEADY_STATE_MIN_AGE_MS) {
         setSteadySamples((prev) => {
-          const next = [...prev, { timestamp: body.timestamp, latencyMs }];
-          return trimSamples(next, Date.now() - SAMPLE_WINDOW_MS);
+          const next = [...prev, sample];
+          return trimSamples(next, cutoff);
         });
       }
-
-      seenPodsRef.current.set(body.podName, {
-        startTime: podStart ?? 0,
-        firstSeenLatencyMs:
-          fingerprint?.firstSeenLatencyMs ?? latencyMs,
-      });
 
       setTotalTaps((t) => t + 1);
     } catch {
@@ -287,8 +263,7 @@ export default function Home() {
 
   const stats = useMemo(() => {
     const recentCutoff = now - 10_000;
-    const recentTaps = steadySamples.filter((s) => s.timestamp >= recentCutoff).length +
-      coldStartSamples.filter((s) => s.timestamp >= recentCutoff).length;
+    const recentTaps = tapSamples.filter((s) => s.timestamp >= recentCutoff).length;
     const rps = recentTaps / 10;
 
     const sortedSteady = steadySamples
@@ -299,20 +274,12 @@ export default function Home() {
         ? null
         : sortedSteady[Math.min(sortedSteady.length - 1, Math.floor(sortedSteady.length * 0.95))];
 
-    // Cold start: median of recent cold-start samples — using a single
-    // outlier would be misleading. p50 is plenty of signal for a demo.
-    const sortedCold = coldStartSamples
-      .map((s) => s.latencyMs)
-      .sort((a, b) => a - b);
-    const coldStart =
-      sortedCold.length === 0
-        ? null
-        : sortedCold[Math.floor(sortedCold.length / 2)];
-
-    return { rps, steadyP95, coldStart };
-  }, [steadySamples, coldStartSamples, now]);
+    return { rps, steadyP95 };
+  }, [tapSamples, steadySamples, now]);
 
   const readyPods = pods.filter((p) => p.ready).length;
+  const cpuRequestMillicores = pods.find((p) => p.cpuRequestMillicores !== null)
+    ?.cpuRequestMillicores ?? null;
   const target = hpa?.targetCpuPercent ?? 50;
   const maxReplicas = hpa?.maxReplicas ?? 10;
 
@@ -354,7 +321,7 @@ export default function Home() {
       <MetricsBlock
         podCount={readyPods}
         hpa={hpa}
-        coldStartMs={stats.coldStart}
+        cpuRequestMillicores={cpuRequestMillicores}
         steadyP95Ms={stats.steadyP95}
         rps={stats.rps}
         errorCount={errorCount}
@@ -388,7 +355,7 @@ export default function Home() {
             Scale history (3 min)
             <Tooltip
               label="About scale history"
-              text="Pod count (green, left axis, step) and HPA-observed CPU (red, right axis). When CPU crosses the dashed target, the green step rises shortly after — that's the autoscaler reacting."
+              text="Ready pods (green), HPA desired pods (amber), and CPU divided by each pod's request (red). Values above 100% mean pods are using more CPU than they requested."
             />
           </h2>
           <span className="text-xs font-mono text-white/50">
@@ -399,6 +366,7 @@ export default function Home() {
           samples={scaleHistory}
           targetCpuPercent={target}
           maxReplicas={maxReplicas}
+          cpuRequestMillicores={cpuRequestMillicores}
         />
       </section>
 
@@ -434,7 +402,7 @@ function HowThisWorks() {
           Service. The hash loop yields to the event loop in 1000-iteration
           chunks so liveness probes stay responsive at saturation. metrics-server
           scrapes pod CPU every 15 seconds; the HPA reconciles desired replicas
-          against the 50% target on the same cadence. Scale-up is rate-limited
+          against a 50% of-request target on the same cadence. Scale-up is rate-limited
           to +2 pods per 15s, scale-down has 60s stabilization plus 1 pod / 30s
           — asymmetric policies that prevent thrashing.
         </p>
@@ -572,7 +540,7 @@ function Footer({ source }: { source: "cluster" | "mock" | "loading" }) {
       <p className="font-mono text-[10px] text-white/35">
         {source === "mock"
           ? "Running with mock pod data — deploy to OpenShift to see the HPA react to real traffic."
-          : "HPA target 50% CPU · scale 1–10 pods · scale-down stabilization 60s · Route exposed via OpenShift HAProxy"}
+          : "HPA target 50% CPU/request · scale 1–10 pods · scale-down stabilization 60s · Route exposed via OpenShift HAProxy"}
       </p>
     </footer>
   );

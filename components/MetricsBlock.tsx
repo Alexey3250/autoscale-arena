@@ -7,7 +7,7 @@ import { Tooltip } from "./Tooltip";
 interface MetricsBlockProps {
   podCount: number;
   hpa: HpaStatus | null;
-  coldStartMs: number | null;
+  cpuRequestMillicores: number | null;
   steadyP95Ms: number | null;
   rps: number;
   errorCount: number;
@@ -18,14 +18,20 @@ const RH_RED = "#EE0000";
 export function MetricsBlock({
   podCount,
   hpa,
-  coldStartMs,
+  cpuRequestMillicores,
   steadyP95Ms,
   rps,
   errorCount,
 }: MetricsBlockProps) {
   const cpu = hpa?.currentCpuPercent ?? null;
   const target = hpa?.targetCpuPercent ?? 50;
+  const desiredReplicas = hpa?.desiredReplicas ?? null;
+  const currentReplicas = hpa?.currentReplicas ?? null;
   const overTarget = cpu !== null && cpu > target;
+  const perPodCpuMillicores =
+    cpu !== null && cpuRequestMillicores !== null
+      ? (cpu / 100) * cpuRequestMillicores
+      : null;
 
   return (
     <div className="w-full">
@@ -41,7 +47,27 @@ export function MetricsBlock({
           }}
         />
         <Stat
-          label="CPU avg"
+          label="HPA wants"
+          value={desiredReplicas === null ? "—" : desiredReplicas.toString()}
+          accent={
+            desiredReplicas !== null && currentReplicas !== null && desiredReplicas > currentReplicas
+              ? "text-amber-200"
+              : "text-white"
+          }
+          highlight={desiredReplicas ?? 0}
+          tooltip={{
+            label: "About desired pods",
+            text: "Desired replicas from the Horizontal Pod Autoscaler. This can rise before the new worker pods are Ready.",
+          }}
+          secondary={currentReplicas === null ? undefined : `current ${currentReplicas}`}
+          secondaryClass={
+            desiredReplicas !== null && currentReplicas !== null && desiredReplicas > currentReplicas
+              ? "text-amber-200/85"
+              : "text-white/45"
+          }
+        />
+        <Stat
+          label="CPU / request"
           value={cpu === null ? "—" : `${Math.round(cpu)}%`}
           accent={overTarget ? "" : "text-sky-300"}
           accentStyle={
@@ -49,29 +75,25 @@ export function MetricsBlock({
           }
           highlight={cpu ?? 0}
           tooltip={{
-            label: "About CPU avg",
-            text: `Average CPU usage across all worker pods. HPA scales when this exceeds ${target}%.`,
+            label: "About HPA CPU",
+            text: cpuRequestMillicores === null
+              ? "HPA CPU is average pod usage divided by each pod's requested CPU, not a percentage of the whole node. Values above 100% mean pods are using more CPU than they requested."
+              : `HPA CPU is average pod usage divided by each pod's ${formatMillicores(cpuRequestMillicores)} CPU request. 300% means about ${formatMillicores(cpuRequestMillicores * 3)} per worker pod.`,
           }}
-          secondary={overTarget ? `over ${target}% target` : undefined}
-          secondaryClass="text-rose-300"
+          secondary={
+            perPodCpuMillicores === null
+              ? `target ${target}%`
+              : `${formatMillicores(perPodCpuMillicores)}/pod · target ${target}%`
+          }
+          secondaryClass={overTarget ? "text-rose-300" : "text-white/45"}
         />
         <Stat
-          label="Cold start"
-          value={coldStartMs === null ? "—" : formatSeconds(coldStartMs)}
-          accent="text-amber-200"
-          tooltip={{
-            label: "About cold start",
-            text: "Time to first response from a newly-spawned pod. Cold starts happen during scale-up events while the pod boots and passes its readiness probe.",
-          }}
-          highlight={coldStartMs ?? 0}
-        />
-        <Stat
-          label="Steady-state p95"
+          label="Warm p95"
           value={steadyP95Ms === null ? "—" : `${Math.round(steadyP95Ms)}ms`}
           accent="text-fuchsia-300"
           tooltip={{
-            label: "About steady-state p95",
-            text: "p95 latency from pods that have been up for 30+ seconds. Filters out cold-start outliers so this reflects real serving performance.",
+            label: "About warm p95",
+            text: "p95 latency from pods that have been Ready long enough to serve normally. New scale-up pods are ignored for this latency card.",
           }}
           secondary={errorCount > 0 ? `${errorCount} errors` : `${rps.toFixed(1)} rps`}
           secondaryClass={errorCount > 0 ? "text-rose-300" : "text-white/45"}
@@ -130,7 +152,7 @@ function Stat({
   );
 }
 
-function formatSeconds(ms: number): string {
-  if (ms < 1_000) return `${Math.round(ms)}ms`;
-  return `${(ms / 1_000).toFixed(1)}s`;
+function formatMillicores(value: number): string {
+  const rounded = Math.round(value);
+  return `${rounded}m`;
 }

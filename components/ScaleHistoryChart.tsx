@@ -16,6 +16,7 @@ import {
 export interface ScaleSample {
   timestamp: number;
   podCount: number;
+  desiredReplicas: number | null;
   /** HPA-observed CPU. Null until metrics-server has reported. */
   cpuPercent: number | null;
 }
@@ -25,9 +26,10 @@ interface ScaleHistoryChartProps {
   targetCpuPercent: number;
   /** maxReplicas from HPA spec; used to scale the left Y axis. */
   maxReplicas: number;
+  cpuRequestMillicores: number | null;
 }
 
-const WINDOW_MS = 120_000;
+const WINDOW_MS = 180_000;
 const RH_RED = "#EE0000";
 
 /**
@@ -40,6 +42,7 @@ export function ScaleHistoryChart({
   samples,
   targetCpuPercent,
   maxReplicas,
+  cpuRequestMillicores,
 }: ScaleHistoryChartProps) {
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
@@ -54,11 +57,21 @@ export function ScaleHistoryChart({
       t: s.timestamp,
       label: formatRelative(s.timestamp, now),
       pods: s.podCount,
+      desired: s.desiredReplicas,
       cpu: s.cpuPercent,
     }));
 
-  const podDomain: [number, number] = [0, Math.max(2, maxReplicas)];
-  const cpuDomain: [number, number] = [0, Math.max(100, targetCpuPercent + 20)];
+  const maxPodValue = Math.max(
+    2,
+    maxReplicas,
+    ...data.map((s) => Math.max(s.pods, s.desired ?? 0)),
+  );
+  const maxCpuValue = Math.max(targetCpuPercent, ...data.map((s) => s.cpu ?? 0));
+  const podDomain: [number, number] = [0, maxPodValue];
+  const cpuDomain: [number, number] = [
+    0,
+    Math.max(100, roundUp(maxCpuValue * 1.1, 50)),
+  ];
 
   return (
     <div className="h-44 w-full">
@@ -94,7 +107,7 @@ export function ScaleHistoryChart({
             domain={cpuDomain}
             tick={{ fill: "rgba(252,165,165,0.85)", fontSize: 10 }}
             stroke="rgba(255,255,255,0.15)"
-            width={36}
+            width={44}
             tickFormatter={(v: number) => `${v}%`}
           />
           <Tooltip
@@ -106,19 +119,18 @@ export function ScaleHistoryChart({
             }}
             labelStyle={{ color: "rgba(255,255,255,0.7)" }}
             formatter={(value: unknown, name: unknown) => {
-              if (name === "pods") {
+              if (name === "Ready pods" || name === "HPA desired") {
                 const n = typeof value === "number" ? value : Number(value ?? 0);
-                return [`${n} pods`, "worker pods"];
+                return [`${n} pods`, String(name)];
               }
-              if (value === null || value === undefined) return ["—", "cpu (HPA)"];
+              if (value === null || value === undefined) return ["—", "CPU / request"];
               const n = typeof value === "number" ? value : Number(value);
-              return [`${Math.round(n)}%`, "cpu (HPA)"];
+              return [formatCpuValue(n, cpuRequestMillicores), "CPU / request"];
             }}
           />
           <Legend
             wrapperStyle={{ fontSize: 11, color: "rgba(255,255,255,0.7)" }}
             iconType="plainline"
-            formatter={(v: string) => (v === "pods" ? "worker pods" : "cpu (HPA)")}
           />
           <ReferenceLine
             yAxisId="cpu"
@@ -135,6 +147,7 @@ export function ScaleHistoryChart({
           <Line
             yAxisId="pods"
             dataKey="pods"
+            name="Ready pods"
             type="stepAfter"
             stroke="#34d399"
             strokeWidth={2}
@@ -143,8 +156,21 @@ export function ScaleHistoryChart({
             connectNulls
           />
           <Line
+            yAxisId="pods"
+            dataKey="desired"
+            name="HPA desired"
+            type="stepAfter"
+            stroke="#fbbf24"
+            strokeWidth={2}
+            strokeDasharray="5 5"
+            dot={false}
+            isAnimationActive={false}
+            connectNulls
+          />
+          <Line
             yAxisId="cpu"
             dataKey="cpu"
+            name="CPU / request"
             type="monotone"
             stroke="#f87171"
             strokeWidth={2}
@@ -165,4 +191,15 @@ function formatRelative(ts: number, now: number): string {
   const min = Math.floor(sec / 60);
   const remainder = sec % 60;
   return remainder === 0 ? `-${min}m` : `-${min}m${remainder}s`;
+}
+
+function roundUp(value: number, increment: number): number {
+  return Math.ceil(value / increment) * increment;
+}
+
+function formatCpuValue(percent: number, requestMillicores: number | null): string {
+  const roundedPercent = Math.round(percent);
+  if (requestMillicores === null) return `${roundedPercent}% of request`;
+  const millicores = Math.round((percent / 100) * requestMillicores);
+  return `${roundedPercent}% (~${millicores}m/pod)`;
 }

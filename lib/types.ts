@@ -4,10 +4,12 @@ export interface PodInfo {
   ready: boolean;
   startTime: string | null;
   nodeName: string | null;
+  /** Sum of container CPU requests for this pod, in millicores. */
+  cpuRequestMillicores: number | null;
 }
 
 export interface HpaStatus {
-  /** Current observed CPU utilisation across worker pods, as percent (0-100+). */
+  /** Current observed CPU across worker pods, as percent of requested CPU. */
   currentCpuPercent: number | null;
   /** Configured target utilisation from the HPA spec (e.g. 50). */
   targetCpuPercent: number | null;

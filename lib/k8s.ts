@@ -66,6 +66,7 @@ export function mockPods(): PodInfo[] {
       ready: true,
       startTime: new Date(Date.now() - 30_000).toISOString(),
       nodeName: "local-node",
+      cpuRequestMillicores: 100,
     },
   ];
 }
@@ -83,6 +84,13 @@ interface RawPod {
   };
   spec?: {
     nodeName?: string;
+    containers?: Array<{
+      resources?: {
+        requests?: {
+          cpu?: string;
+        };
+      };
+    }>;
   };
 }
 
@@ -116,7 +124,37 @@ export function toPodInfo(raw: RawPod): PodInfo | null {
     ready,
     startTime: raw.status?.startTime ?? null,
     nodeName: raw.spec?.nodeName ?? null,
+    cpuRequestMillicores: cpuRequestForPod(raw),
   };
+}
+
+function cpuRequestForPod(raw: RawPod): number | null {
+  const values = raw.spec?.containers
+    ?.map((container) => parseCpuQuantityToMillicores(container.resources?.requests?.cpu))
+    .filter((value): value is number => value !== null);
+  if (!values || values.length === 0) return null;
+  return values.reduce((sum, value) => sum + value, 0);
+}
+
+function parseCpuQuantityToMillicores(quantity: string | undefined): number | null {
+  if (!quantity) return null;
+  const trimmed = quantity.trim();
+  const match = /^([0-9]+(?:\.[0-9]+)?)(n|u|m)?$/.exec(trimmed);
+  if (!match) return null;
+
+  const value = Number(match[1]);
+  if (!Number.isFinite(value)) return null;
+
+  switch (match[2]) {
+    case "n":
+      return value / 1_000_000;
+    case "u":
+      return value / 1_000;
+    case "m":
+      return value;
+    default:
+      return value * 1_000;
+  }
 }
 
 /**
